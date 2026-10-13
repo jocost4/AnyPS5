@@ -149,12 +149,20 @@ WindowsEntryStub WindowsEntryStubBuilder::Build(const std::uint32_t dataRva, con
             for (std::size_t index = guestModules.size(); index < libraries.size(); ++index) {
                 if (libraries[index] == "libc.prx" && import.Library != "libc.prx") order.push_back(CheckedRva(index));
             }
-            if (import.Library == "libSceLibcInternal.prx") {
+            if (import.Library == "libkernel.prx" || import.Library == "libSceLibcInternal.prx") {
+                for (std::size_t index = guestModules.size(); index < libraries.size(); ++index) {
+                    if (libraries[index] == "libc.prx") order.push_back(CheckedRva(index));
+                }
                 for (std::size_t index = 0; index < guestModules.size(); ++index) {
                     const auto& names = guestModules[index].Names;
-                    if (std::find(names.begin(), names.end(), "libc.prx") != names.end() && !guestModules[index].ZeroReturnExports.contains(import.Name))
+                    if (std::find(names.begin(), names.end(), "libc.prx") != names.end())
                         order.push_back(CheckedRva(index));
                 }
+            }
+        }
+        if (import.Library == "libkernel.prx") {
+            for (std::size_t index = 0; index < guestModules.size(); ++index) {
+                order.push_back(CheckedRva(index));
             }
         }
         Io::AlignBuffer(data, 4);
@@ -454,10 +462,13 @@ WindowsEntryStub WindowsEntryStubBuilder::Build(const std::uint32_t dataRva, con
         code.Emit({0xbd});
         code.U32(searchCounts[index]);
         const auto search = code.GetRva();
-        code.Emit({0x8b, 0x0f, 0x48, 0x8b, 0x0c, 0xcb, 0x48, 0x89, 0xf2});
+        code.Emit({0x8b, 0x0f, 0x48, 0x8b, 0x0c, 0xcb, 0x48, 0x85, 0xc9});
+        const auto skipNullHandle = code.Branch({0x0f, 0x84});
+        code.Emit({0x48, 0x89, 0xf2});
         call("GetProcAddress");
         code.Emit({0x48, 0x85, 0xc0});
         const auto resolved = code.Branch({0x0f, 0x85});
+        code.PatchBranch(skipNullHandle, code.GetRva());
         code.Emit({0x48, 0x83, 0xc7, 4, 0xff, 0xcd});
         code.Rip({0x0f, 0x85}, search);
         if (imports[index].Weak) {
@@ -490,7 +501,7 @@ WindowsEntryStub WindowsEntryStubBuilder::Build(const std::uint32_t dataRva, con
         }
         captureLastError();
         writeString(errorRvas.at(3 + index), true);
-        unresolvedBranches.push_back(code.Branch({0xe9}));
+        code.Emit({0x48, 0x31, 0xc0});
         code.PatchBranch(resolved, code.GetRva());
         if (imports[index].RelocationType == 16) code.Emit({0x48, 0x8b, 0x00});
         if (imports[index].RelocationType == 17) code.Emit({0x48, 0x8b, 0x40, 8});
